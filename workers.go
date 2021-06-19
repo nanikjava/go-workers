@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -158,7 +159,8 @@ func (r *runner) SetTimeout(duration time.Duration) Runner {
 // !!Should only be called when certain nothing will send to worker.
 func (r *runner) Wait() (err error) {
 	r.waitForDrain()
-	if err = <-r.Stop(); err != nil || !errors.Is(err, context.Canceled) {
+	errChan := r.Stop()
+	if err = <-errChan; err != nil || !errors.Is(err, context.Canceled) {
 		return
 	}
 	return nil
@@ -167,7 +169,7 @@ func (r *runner) Wait() (err error) {
 // Stop Stops the processing of a worker and closes it's channel in.
 // Returns a blocking channel with type error.
 // !!Should only be called when certain nothing will send to worker.
-func (r *runner) Stop() chan error {
+func (r *runner) Stop()  chan error {
 	r.done.Do(func() {
 		if r.inChan != nil && r.isLeader {
 			close(r.inChan)
@@ -195,8 +197,10 @@ func (r *runner) waitForSignal(signals ...os.Signal) {
 // waitForDrain Waits for the limiter to be zeroed out and the in channel to be empty.
 func (r *runner) waitForDrain() {
 	for len(r.limiter) > 0 || len(r.inChan) > 0 {
-		// Wait for the drain.
 	}
+
+	fmt.Println("drain done")
+
 }
 
 // startWork Runs the before function and starts processing until one of three things happen.
@@ -229,7 +233,6 @@ func (r *runner) startWork() {
 		for in := range r.inChan {
 			select {
 			case <-r.ctx.Done():
-				err = context.Canceled
 				continue
 			default:
 				r.limiter <- struct{}{}
@@ -241,8 +244,14 @@ func (r *runner) startWork() {
 					}()
 					if workErr := r.workFunc(in, r.outChan); workErr != nil {
 						r.once.Do(func() {
-							errors.As(err, &workErr)
-							r.cancel()
+							if err == nil {
+								err = workErr
+								r.cancel()
+							} else {
+								errors.As(err, &workErr)
+								r.cancel()
+							}
+							err = fmt.Errorf("user error: %v, go-workers: %v", err, context.Canceled)
 							return
 						})
 					}
